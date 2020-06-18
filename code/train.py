@@ -11,10 +11,10 @@ def decode(infile, n=-1):
 	assert os.path.isfile(infile), str(os.getcwd() / infile) + " doesn't exist"
 	with open(infile, 'r') as infile:
 		if n == -1:
-			while(not infile.)
-			line = infile.readline()
-			dic = json.loads(line)
-			yield(tf.convert_to_tensor([dic['review_body'], dic['stars']]))
+			while(not infile.):
+				line = infile.readline()
+				dic = json.loads(line)
+				yield(tf.convert_to_tensor([dic['review_body'], dic['stars']]))
 		else
 
 
