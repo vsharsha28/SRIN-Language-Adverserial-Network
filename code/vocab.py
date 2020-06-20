@@ -72,7 +72,7 @@ methods: (self)
 					self.pretrained[cnt] = vector
 					cnt += 1
 		else:
-			pass
+			print(pre_train_infile, " does not exist.")
 		
 		# add <unk>
 		self.unk_tok = '<unk>'
@@ -148,17 +148,25 @@ methods: (self)
 		"""
 		# free some memory
 		#self.clear_pretrained_vectors()
-		emb_layer = layers.Embedding(input_dim=self.vocab_size, output_dim=self.emb_size, name='vocab_embedding')
-		emb_layer.build(input_shape=(self.vocab_size, self.emb_size))
-		emb_layer.set_weights(tf.convert_to_tensor(self.embeddings, dtype=tf.float32))
+		emb_layer = layers.Embedding(input_dim=self.vocab_size, output_dim=self.emb_size, input_length=4, name='vocab_embedding')
+		emb_layer.build(input_shape=(None, self.vocab_size, self.emb_size))
+		prev = emb_layer.weights
+		print(prev)
+		emb_layer.set_weights(np.array([self.embeddings], dtype=float))
 		emb_layer.trainable = False
+		print(prev[0] == emb_layer.weights[0])
+		print()
 		#assert len(emb_layer.weight) == self.vocab_size
-		return emb_layer
+		return emb_layer, prev
 
 
 if __name__ == "__main__":
+	"""
+	run as main
+	"""
 	vocab = Vocab('')
-	vocab.add_word('hey')
-	vocab.add_word('hi')
-	emb_layer = vocab.init_embed_layer()
-	print(emb_layer.variables, '\n', emb_layer.weights)
+	vocab.add_word('the')
+	vocab.add_word('of')
+	emb_layer, prev = vocab.init_embed_layer()
+	print(emb_layer.variables)
+	print(prev == emb_layer.weights)
