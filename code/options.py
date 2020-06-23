@@ -11,7 +11,9 @@ parser.add_argument('--src_lang', default='en')
 parser.add_argument('--tgt_lang', default='fr')
 parser.add_argument('--train_size_src', type=int, default=-1)   # use all
 parser.add_argument('--train_size_tgt', type=int, default=-1)   # use all
-parser.add_argument('--max_seq_len', type=int, default=-1)	  # no truncate
+parser.add_argument('--iterate', action='store_true')			# read through iterations
+parser.add_argument('--pre_trained_emb_file', type=str, default=None)	# "bwe/vectors/wiki.multi.en.vec"
+parser.add_argument('--max_seq_len', type=int, default=-1)		# no truncate
 parser.add_argument('--random_seed', type=int, default=1)
 parser.add_argument('--model_save_file', default='./saved_models/adan')
 parser.add_argument('--batch_size', type=int, default=100)
@@ -57,4 +59,7 @@ parser.add_argument('--debug/', dest='debug', action='store_true')
 opt = parser.parse_args()
 
 if not tf.config.list_physical_devices('GPU'):
-	opt.device = 'cpu'
+	opt.device = 'CPU'
+
+if __name__ == "__main__":
+	print("called opt", opt.pre_trained_emb_file)
