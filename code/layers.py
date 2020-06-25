@@ -1,3 +1,5 @@
+# layers.py
+
 #!/usr/bin/env ipython
 
 import tensorflow as tf
@@ -6,61 +8,68 @@ from tensorflow.keras import layers, models
 
 import numpy as np
 
+from options import *
+from vocab import *
+from data import *
+from utils import *
 
-@keras_export('keras.layers.Averaging')
 class Averaging(layers.Layer):
-	def __init__(self, emb_layer):
-		super(Average, self).__init__()
+	def __init__(self, emb_layer, **kwargs):
+		super(Averaging, self).__init__(**kwargs)
 		self.emb_layer = emb_layer
 
-	def call(self, inputs):
+	def call(self, input_seq_batch):
 		"""
-		inputs => input_seq_batch : Tensor(batch_size, max_sent_len), seq_lengths : Tensor(batch_size)
+parameters:	input_seq_batch : Tensor(BSZ, MSL)
+return:		Embeddings averaged over sequences (MSL axis) : Tensor(BSZ, EMBDIM)
 		"""
-		input_seq_batch, seq_lengths = inputs
-		embeddings = self.emb_layer(input_seq_batch)
-		lengths = tf.resape(lengths, (-1, 1)).broadcast_to(X.shape)
-		self.W = tf.cast(tf.reduce_sum(embeddings, axis=1), dtype=tf.float32)
-		lengths = tf.broadcast_to(tf.reshape(lengths, (-1, 1)), shape=self.W.shape)
-		return self.W/tf.cast(lengths, dtype=tf.float32)
+		lengths = [len(x) for x in input_seq_batch]										# (BSZ,)
+		embeddings = self.emb_layer(input_seq_batch)									# (BSZ, MSL, EMBDIM)
+		lengths = tf.reshape(lengths, (-1, 1))											# (BSZ, 1)
+		self.W = tf.cast(tf.reduce_sum(embeddings, axis=1), dtype=tf.float32)			# (BSZ, EMBDIM)
+		#print(self.W.shape)
+		lengths = tf.broadcast_to(tf.reshape(lengths, (-1, 1)), shape=self.W.shape)		# (BSZ, EMBDIM)
+		return self.W/tf.cast(lengths, dtype=tf.float32)								# (BSZ, EMBDIM)
 
 
-@keras_export('keras.layers.Summing')
 class Summing(layers.Layer):
-	def __init__(self, emb_layer):
-		super(Summing, self).__init__()
+	def __init__(self, emb_layer, **kwargs):
+		super(Summing, self).__init__(**kwargs)
 		self.emb_layer = emb_layer
 
 	def call(self, inputs):
 		"""
-		inputs => (data, lengths): (Tensor(batch_size, max_sent_len), Tensor(batch_size))
+parameters:	input_seq_batch : Tensor(BSZ, MSL)
+return:		Embeddings summed over sequences (MSL axis) : Tensor(BSZ, EMBDIM)
 		"""
-		data, _ = inputs
-		embeddings = self.emb_layer(data)
-		self.W = tf.cast(tf.reduce_sum(embeddings, axis=1), dtype=tf.float32)
+		embeddings = self.emb_layer(inputs)										# (BSZ, MSL, EMBDIM)
+		self.W = tf.cast(tf.reduce_sum(embeddings, axis=1), dtype=tf.float32)	# (BSZ, EMBDIM)
 		return self.W
 
 
-@keras_export('keras.layers.DotAttention')
 class DotAttention(layers.Layer):
-	def __init__(self, hidden_size):
-		super(DotAttentionLayer, self).__init__()
+	def __init__(self, hidden_size, **kwargs):
+		super(DotAttentionLayer, self).__init__(**kwargs)
 		self.hidden_size = hidden_size
-		self.W = layers.Dense(units=1, input_shape=(hidden_size,), use_bias=False)
+		self.dense = layers.Dense(units=1, input_shape=(hidden_size,), activation='linear', use_bias=False)	# input Tensor : (None, HIDSZ)
 
 	def call(self, inputs):
 		"""
-		inputs => unpacked_padded_output: np.array(batch_size, seq_len, hidden_size), lengths: np.array(batch_size)
+		inputs => unpacked_padded_output: np.array(BSZ, MSL, HIDSZ)
 		"""
-		data, lengths = inputs
-		batch_size, max_len, _ = data.size()
-		flat_input = data.contiguous().view(-1, self.hidden_size)
-		logits = tf.reshape(self.W(flat_input), shape=(batch_size, max_len))
+		lengths = [len(x) for x in inputs]										# (BSZ,)
+		BSZ, MSL, EMBDIM = inputs.shape
+		#flat_input = data.contiguous().view(-1, self.hidden_size)
+		try:
+			flat_inputs = tf.convert_to_tensor([x for x in inputs.unbatch()])	# (BSZ*MSL, EMBDIM)
+		except ValueError:
+			flat_inputs = tf.convert_to_tensor([x for x in inputs])				# (1*MSL, EMBDIM)
+		flat_input = tf.reshape(data, shape=(-1, self.hidden_size))				# (-1, HIDSZ)	:	(BSZ*MSL*EMBDIM/HIDSZ, HIDSZ)
+		logits = tf.reshape(self.dense(flat_input), shape=(BSZ, MSL))			# (BSZ*MSL*EMBDIM, 1) => (BSZ, MSL)
 		alphas = tf.nn.softmax(logits, dim=-1)
 
 		# computing mask
-		idxes = torch.arange(0, max_len, out=torch.LongTensor(max_len)).unsqueeze(0).to(inputs.device)
-		idxes = tf.expand_dims(tf.cast(tf.linspace(start=0, stop=max_len), dtype=tf.int64), axis=0)
+		idxes = tf.expand_dims(tf.range(max_len, dtype=tf.int64), axis=0)
 		mask = tf.cast((idxes < tf.expand_dims(lengths, axis=1)), dtype=tf.float32)
 
 		alphas = alphas * mask
@@ -72,7 +81,6 @@ class DotAttention(layers.Layer):
 
 
 
-@keras_export('keras.layers.LogSoftmax')
 class LogSoftmax(layers.Layer):
 	"""LogSoftmax activation function.
 	Input shape:
@@ -98,6 +106,18 @@ class LogSoftmax(layers.Layer):
 		base_config = super(LogSoftmax, self).get_config()
 		return dict(list(base_config.items()) + list(config.items()))
 
-	@tf_utils.shape_type_conversion
 	def compute_output_shape(self, input_shape):
 		return input_shape
+
+
+if __name__ == "__main__":
+	infile = Path('Amazon reviews/test/dataset_en_test.json')
+	vocab = Vocab(opt.pre_trained_src_emb_file)
+	rev = AmazonReviews()
+	data = rev.load_data(lang='en', dat='train', lines=100)
+	data = vocab.pad_sequences(data)
+	print('\n', data)
+	emb_layer = vocab.init_embed_layer()
+	print(emb_layer(tf.convert_to_tensor([x for x, y in data.as_numpy_iterator()], dtype='int32')), '\n\n')
+	avg = Averaging(emb_layer)
+	print(avg(tf.convert_to_tensor([x for x, y in data.as_numpy_iterator()], dtype='int32')))

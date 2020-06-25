@@ -1,7 +1,10 @@
+# utils.py
+
 #!/usr/bin/env ipython
 
 import tensorflow as tf
-from tensorflow import keras, layers, models
+from tensorflow import keras
+from tensorflow.keras import layers, models, preprocessing
 
 import pdb
 import numpy as np
@@ -14,8 +17,10 @@ def freeze(net):
 def unfreeze(net):
 	net.trainable = True
 
-def pad(x : list, y : list, eos_idx : int, sort : bool):
-	inputs, lengths = zip(*x)
+def pad(x : list, y : list, eos_idx : int, sort:bool=False):
+	#inputs, lengths = zip(*x)
+	inputs = x
+	lengths = [len(l) for l in x]
 	max_len = max(lengths)
 	# pad sequences
 	padded_inputs = tf.fill((len(inputs), max_len), eos_idx, dtype=tf.int64)
@@ -28,7 +33,7 @@ def pad(x : list, y : list, eos_idx : int, sort : bool):
 		# sort by length
 		sorted_lengths = lengths.sort(axis=0, direction='DESCENDING')
 		sorting_idx = keras.backend.eval(sorted_lengths)
-		padded_inputs = padded_inputs.index_select(0, sorting_idx)
+		padded_inputs = tf.gather(params=padded_inputs, indices=sorting_idx, axis=0)
 		y = tf.gather(params=y, indices=sorting_idx, axis=0)
 		return (padded_inputs, sorted_lengths), y
 	else:

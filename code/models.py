@@ -1,9 +1,10 @@
+# models.py
+
 #!/usr/bin/env ipython
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers, models
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras import layers, models, optimizers, preprocessing
 
 import numpy as np
 import os, io
@@ -14,39 +15,44 @@ from options import opt
 from layers import *
 
 
-class DAN_Fetaure_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, pooling='avg', dropout=0, batch_norm=False):
-		super(DAN_Feature_Extractor, self).__init__()
+class DAN_Feature_Extractor(keras.Model):
+	def __init__(self, vocab, num_layers, hidden_size, pooling='avg', dropout=0, batch_norm=False, activation='selu', **kwargs):
+		super(DAN_Feature_Extractor, self).__init__(**kwargs)
+		assert num_layers >= 0, 'Invalid layer numbers'
+		self.trainable=True
 
+		self.emb_layer = vocab.init_embed_layer()
 		if(pooling == 'sum' or pooling == 'add'): self.pool = Summing(self.emb_layer)
 		else: self.pool = Averaging(self.emb_layer)
 
-		assert num_layers >= 0, 'Invalid layer numbers'
-
 		self.fcnet = keras.Sequential()
+		self.fcnet.add(self.pool)
 		for i in range(num_layers):
-			if dropout > 0:
-				self.fcnet.add(layers.Dropout(rate=dropout))
+			if dropout > 0: self.fcnet.add(layers.Dropout(rate=dropout))
 
-			if i == 0:
-				self.fcnet.add(layers.Dense(units=hidden_size, input_shape=(vocab.emb_size,), activation='selu'))
-			else:
-				self.fcnet.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation='selu'))
+			if i == 0: self.fcnet.add(layers.Dense(units=hidden_size, input_shape=(vocab.emb_size,), activation=activation))
+			else: self.fcnet.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation=activation))
 
-			if batch_norm:
-				self.fcnet.add(layers.BatchNormalization(input_shape=(hidden_size,)))	# same shape as input	# use training=False when making inference from model (model.predict, model.evaluate?)
-			
+			if batch_norm: self.fcnet.add(layers.BatchNormalization(input_shape=(hidden_size,)))	# same shape as input	# use training=False when making inference from model (model.predict, model.evaluate?)
+
 			self.fcnet.add(layers.LeakyReLU(alpha=0.3))
 			#self.fcnet.add(layers.ReLU())
 	
 	def call(self, input):
-		return self.fcnet(self.pool(input))
+		return self.fcnet(input)	#(self.pool(input))
 
+	def freeze(self):
+		self.trainable = False
+		self.fcnet.trainable = False
+
+	def unfreeze(self):
+		self.trainable = True
+		self.fcnet.trainable = True
 
 
 class LSTM_Feature_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, dropout=0, bidir_rnn=True, attn_type='dot'):
-		super(LSTM_Feature_Extractor, self).__init__()
+	def __init__(self, vocab, num_layers, hidden_size, dropout=0, bidir_rnn=True, attn_type='dot', **kwargs):
+		super(LSTM_Feature_Extractor, self).__init__(**kwargs)
 
 		self.num_layers = num_layers
 		self.bidir_rnn = bidir_rnn
@@ -56,15 +62,11 @@ class LSTM_Feature_Extractor(keras.Model):
 
 		self.emb_layer = vocab.init_embed_layer()
 
-		if bidir_rnn:
-			self.rnn = layers.Bidirectional(layers.LSTM(units=self.hidden_size, num_layers=num_layers, dropout=dropout, input_shape=(vocab.emb_size,)))
-		else:
-			self.rnn = layers.LSTM(units=self.hidden_size, num_layers=num_layers, dropout=dropout, input_shape=(vocab.emb_size,))
+		if bidir_rnn: self.rnn = layers.Bidirectional(layers.LSTM(units=self.hidden_size, num_layers=num_layers, dropout=dropout, input_shape=(vocab.emb_size,)))
+		else: self.rnn = layers.LSTM(units=self.hidden_size, num_layers=num_layers, dropout=dropout, input_shape=(vocab.emb_size,))
 
-		if attn_type == 'dot':
-			self.attn = layers.Attention()
-		elif attn_type == 'add':
-			self.attn = layers.AdditiveAttention()
+		if attn_type == 'dot': self.attn = layers.Attention()
+		elif attn_type == 'add': self.attn = layers.AdditiveAttention()
 
 	def call(self, inputs):
 		data, lengths = inputs
@@ -88,11 +90,18 @@ class LSTM_Feature_Extractor(keras.Model):
 		else:
 			raise Exception('Please specify valid attention (pooling) mechanism')
 
+	#def freeze(self):
+	#	self.trainable = False
+	#	self.fcnet.trainable = False
+
+	#def unfreeze(self):
+	#	self.trainable = True
+	#	self.fcnet.trainable = True
 
 
 class CNN_Feature_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, kernel_num, kernel_sizes, dropout):
-		super(CNNFeatureExtractor, self).__init__()
+	def __init__(self, vocab, num_layers, hidden_size, kernel_num, kernel_sizes, dropout=0, **kwargs):
+		super(CNN_Feature_Extractor, self).__init__(**kwargs)
 		self.emb_layer = vocab.init_embed_layer()
 		self.kernel_num = kernel_num
 		self.kernel_sizes = kernel_sizes
@@ -123,56 +132,97 @@ class CNN_Feature_Extractor(keras.Model):
 		# fcnet
 		return self.fcnet(x)
 
+	def freeze(self):
+		self.trainable = False
+		self.fcnet.trainable = False
 
+	def unfreeze(self):
+		self.trainable = True
+		self.fcnet.trainable = True
 
 
 class Sentiment_Classifier(keras.Model):
-	def __init__(self, num_layers, hidden_size, output_size, dropout=0, batch_norm=False):
-		super(Sentiment_Classifier, self).__init__()
+	def __init__(self, num_layers, hidden_size, output_size, dropout=0, batch_norm=False, **kwargs):
+		super(Sentiment_Classifier, self).__init__(**kwargs)
 		assert num_layers >= 0, 'Invalid layer numbers'
-
+		self.trainable=True
 		self.net = models.Sequential()
-
 		for _ in range(num_layers):
-			if dropout > 0:
-				self.net.add(layers.Dropout(rate=dropout))
-
+			if dropout > 0: self.net.add(layers.Dropout(rate=dropout))
 			self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation='selu'))
-
-			if batch_norm:
-				self.net.add(layers.BatchNormalization())
-
+			if batch_norm: self.net.add(layers.BatchNormalization())
 			self.net.add(layers.ReLU())
-
-		self.net.add(layers.Dense(hidden_size, output_size))
-
+		self.net.add(layers.Dense(units=output_size, input_shape=(hidden_size,), activation='selu'))
 		self.net.add(LogSoftmax(axis=-1))
 
 	def call(self, input):
 		return self.net(input)
 
+	def freeze(self):
+		self.trainable = False
+		self.net.trainable = False
+
+	def unfreeze(self):
+		self.trainable = True
+		self.net.trainable = True
 
 
 
 class Language_Detector(keras.Model):
-	def __init__(self, num_layers, hidden_size, dropout=0, batch_norm=False):
-		super(LanguageDetector, self).__init__()
+	def __init__(self, num_layers, hidden_size, dropout=0, batch_norm=False, activation='selu', **kwargs):
+		super(Language_Detector, self).__init__(**kwargs)
 		assert num_layers >= 0, 'Invalid layer numbers'
-		
-		self.net = nn.Sequential()
-
+		self.trainable = True
+		self.net = keras.Sequential()
+		#self.net.add(layers.InputLayer(input_shape=(900,)))
 		for i in range(num_layers):
-			if dropout > 0:
-				self.net.add(layers.Dropout(rate=dropout))
-			
-			self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation='selu'))
+			if dropout > 0: self.net.add(layers.Dropout(rate=dropout))
+			self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation=activation))
+			if batch_norm: self.net.add(layers.BatchNormalization(input_shape=(hidden_size,)))
+		self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation=activation))
+		self.net.add(layers.Dense(units=1, input_shape=(hidden_size,), activation=activation))
 
-			if batch_norm:
-				self.net.add(layers.BatchNormalization(input_shape=(hidden_size,)))
+	def call(self, input, compute_loss=False):
+		if not compute_loss: return self.net(input)
+		output_ad = self.net(input)
+		loss_ad = self.loss_fn(o_ad)
+		return output_ad, loss_ad
 
-		self.net.add(layers.Dense(units=output_size, input_shape=(hidden_size,), activation='selu'))
+	def compile(self, optimizer=optimizers.Adam(learning_rate=opt.Q_learning_rate), loss_fn=tf.reduce_mean):
+		super(Language_Detector, self).compile()
+		self.optimizer = optimizer
+		self.loss_fn = loss_fn
+		#self.net.compile(optimizer=self.optimizer, loss=loss_fn)
 
-		self.net.add(layers.Dense(units=1, input_shape=(hidden_size,), activation='selu'))
+	def train_step(self, features, name='src', _lambda=1.0):
+		sgn = -1 if name == 'src' else 1
+		with tf.GradientTape() as tape:
+			output_ad = sgn * _lambda * self(features)
+			loss_ad = self.loss_fn(output_ad, axis=-1, name='loss_ad')
+		#log.info(loss_ad)
+		trainable_variables = self.net.trainable_variables
+		grads = tape.gradient(loss_ad, trainable_variables)
+		if self.trainable: self.optimizer.apply_gradients(zip(grads, self.net.trainable_weights))
+		return {"loss_ad" : loss_ad}
 
-	def call(self, input):
-		return self.net(input)
+	def clip_weights(self):
+		pass
+
+	def freeze(self):
+		self.trainable = False
+		self.net.trainable = False
+
+	def unfreeze(self):
+		self.trainable = True
+		self.net.trainable = True
+
+
+
+"""
+optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+grads_and_vars = optimizer.compute_gradients(loss_final)
+grads, _ = list(zip(*grads_and_vars))
+norms = tf.global_norm(grads)
+gradnorm_s = tf.summary.scalar('gradient norm', norms)
+train_op = optimizer.apply_gradients(grads_and_vars, name='train_op')
+"""
