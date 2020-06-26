@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env ipython
-
+# foo = open('train.py', 'r'); foo.readline(); exec(foo.read()); foo.close()
 #import torch
 #import torch.nn as nn
 #import torch.nn.functional as functional
@@ -83,18 +83,24 @@ until convergence
 	Q = Language_Detector(opt.Q_layers, opt.hidden_size, opt.dropout, opt.Q_bn)
 	log.info('Done...')
 
-	optimizerFP = optimizers.Adam(lr=opt.learning_rate)		#.(list(F.parameters()) + list(P.parameters()))	# clipvalue = [opt.clip_lower, opt.clip_upper]
-	optimizerQ = optimizers.Adam(lr=opt.Q_learning_rate)	#.(Q.parameters())	# clipvalue = [opt.clip_lower, opt.clip_upper]
+	optimizer_FP = Optimizer_FP(models=[F, P, Q], lr=opt.learning_rate, clip_lim=opt.clip_lim_FP)
+	if not opt.clip_Q: optimizer_Q = optimizers.Adam(lr=opt.Q_learning_rate)
+	else: optimizer_Q = optimizers.Adam(lr=opt.Q_learning_rate, clipvalue=opt.clipvalue)
 	
-	Q.compile(optimizer=optimizerQ)
+	F.compile(optimizer=optimizer_FP)
+	P.compile(optimizer=optimizer_FP)
+	Q.compile(optimizer=optimizer_Q)
+
 	best_acc = 0.0
 	# train tgt iterator
 	train_tgt_iter = iter(train_tgt)
+	log.info('Main Iteration begin...')
 	""" Main iterations """
 	for epoch in trange(opt.epochs):
-		F.trainable = True
-		P.trainable = True
-		Q.trainable = True
+		F.unfreeze()
+		P.unfreeze()
+		Q.unfreeze()
+		F.freeze_emb_layer()
 		
 		# for training accuracy
 		correct, total = 0, 0
@@ -103,6 +109,7 @@ until convergence
 		
 		# train src iterator
 		train_src_iter = iter(train_src)
+		log.info('Q iteration begin...')
 		for i, (inputs_src, labels_src) in tqdm(enumerate(train_src_iter), total=length['train_src']//opt.batch_size + 1):
 			""" sample batches: labeled (xsrc, ysrc) in Xsrc """
 			""" sample unlabeled xtgt in Xtgt """
@@ -116,10 +123,11 @@ until convergence
 			""" Q iterations: """
 			q_critic = opt.q_critic
 			if q_critic>0 and ((epoch==0 and i<=25) or (i%500==0)): q_critic = 10
-			freeze(F.fcnet)
-			freeze(P.net)
-			unfreeze(Q.net)
-			Q.clip_weights()
+			F.freeze()
+			P.freeze()
+			Q.unfreeze()
+			F.freeze_emb_layer()
+			#Q.clip_weights()
 
 			for qiter in range(q_critic):
 				""" sample unlabeled batches: xsrc in Xsrc, xtgt in Xtgt """
@@ -142,28 +150,9 @@ until convergence
 				features_tgt = F(inputs_tgt_Q)
 				
 				""" calculate loss_q : loss_q = -Q(f_src) + Q(f_tgt) """
-
-				#"""
-				#o_src_ad = Q(features_src)
-				#o_tgt_ad = Q(features_tgt)
-				
-				#l_src_ad = tf.reduce_mean(o_src_ad, axis=-1)	#torch.mean(o_en_ad)
-				#l_tgt_ad = tf.reduce_mean(o_tgt_ad, axis=-1)	#torch.mean(o_tgt_ad)
-				
-				#(-l_src_ad).backward()
-				#log.debug(f'Q grad norm: {Q.net[1].weight.grad.data.norm()}')
-				#sum_src_q = (sum_src_q[0] + 1, sum_src_q[1] + l_src_ad.item())
-
-				#l_tgt_ad.backward()
-				#log.debug(f'Q grad norm: {Q.net[1].weight.grad.data.norm()}')
-				#sum_tgt_q = (sum_tgt_q[0] + 1, sum_tgt_q[1] + l_tgt_ad.item())
-
-				#"""
-
 				""" update Q to minimise loss_q """
-				l_src_ad = Q.train_step(features_src, 'src')['loss_ad']
-				l_tgt_ad = Q.train_step(features_tgt, 'tgt')['loss_ad']
-
+				l_src_ad = Q.train_step(features_src, 'src')['loss']
+				l_tgt_ad = Q.train_step(features_tgt, 'tgt')['loss']
 				# summed Q losses
 				sum_src_q = (sum_src_q[0] + 1, sum_src_q[1] + l_src_ad)
 				sum_tgt_q = (sum_tgt_q[0] + 1, sum_tgt_q[1] + l_tgt_ad)
@@ -171,56 +160,32 @@ until convergence
 				""" clip Q weights """
 				Q.clip_weights()
 			
+			log.info('Q iteration done.')
+
 			""" F&P iteration """
 			F.unfreeze()
 			P.unfreeze()
 			Q.freeze()
-			if opt.fix_emb:	freeze(F.emb_layer)
+			if opt.fix_emb:	pass #F.freeze_emb_layer()
+			elif epoch>3: F.unfreeze_emb_layer()
 
 			""" extract features : f_src, f_tgt = F(x_src), F(x_tgt) """
-			features_src = F(inputs_src)
-			features_tgt = F(inputs_tgt)
-			
 			""" calculate loss : loss = Lp(P(f_src); y_src) + λ * (Q(f_src) - Q(f_tgt)) """
-			o_src_sent = P(features_src)
-			l_src_sent = losses.SparseCategoricalCrossentropy(o_src_sent, labels_src)
-			#l_src_sent.backward(retain_graph=True)
-			
-			#o_src_ad, l_src_ad = Q(features_src, compute_loss=True)
-			#o_tgt_ad, l_tgt_ad = Q(features_tgt, compute_loss=True)
-			
-			#(opt.lambd*l_en_ad).backward(retain_graph=True)
-			#(-opt.lambd*l_ch_ad).backward()
+			metrices = optimizer_FP.call(inputs_src, inputs_tgt, labels_src, labels_tgt=None, _lambda=opt._lambda, supervised=False)
+			#pred = argmax32(o_src_sent)
+			#total += len(labels_src)
+			#correct += np.sum(pred == labels_src)
 
-			l_src_ad = Q.train_step(features_src, 'src', opt._lambda)['loss_ad']
-			l_tgt_ad = Q.train_step(features_tgt, 'tgt', opt._lambda)['loss_ad']
+		#log.info('\n\nl_src_ad = \n' + str(l_src_ad))
+		#log.info('\n\nl_tgt_ad = \n' + str(l_tgt_ad))
+		log.info(f'\n\n result :\n' + str(metrices))
 
-			pred = np.max(o_src_sent, axis=1)
-			total += len(labels_src) #np.array(targets_src).shape(0)
-			correct += np.sum(pred == labels_src)
-
-			##features_en = F(inputs_en)
-			##o_en_sent = P(features_en)
-			#l_en_sent = functional.nll_loss(o_en_sent, targets_en)
-			#l_en_sent.backward(retain_graph=True)
-			##o_en_ad = Q(features_en)
-			##l_en_ad = torch.mean(o_en_ad)
-			#(opt.lambd*l_en_ad).backward(retain_graph=True)
-			## training accuracy
-			#_, pred = torch.max(o_en_sent, 1)
-			#total += targets_en.size(0)
-			#correct += (pred == targets_en).sum().item()
-
-			##features_ch = F(inputs_ch)
-			##o_ch_ad = Q(features_ch)
-			##l_ch_ad = torch.mean(o_ch_ad)
-			#(-opt.lambd*l_ch_ad).backward()
-
-			#optimizerFP.step()
-
-		log.info('\n\nl_src_ad = \n' + str(l_src_ad))
-		log.info('\n\nl_tgt_ad = \n' + str(l_tgt_ad))
-
+	log.info('\nMain iteration done.')
+	log.info(f' (Q(features_src) < Q(features_tgt)) : {np.sum(Q(features_src) < Q(features_tgt))}')
+	log.info(f' (Q(features_src) > Q(features_tgt)) : {np.sum(Q(features_src) > Q(features_tgt))}')
+	log.info(f' Q precision in differentiating src-tgt : {np.sum(Q(features_src) > Q(features_tgt)) / (np.sum(Q(features_src) < Q(features_tgt)) + np.sum(Q(features_src) > Q(features_tgt)))}')
+	log.info(f' Q accuracy : unknown')
+	log.info(f'\n\n RESULT :\n' + str(metrices))
 
 # train.py
 #if __name__ == "__main__":

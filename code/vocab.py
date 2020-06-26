@@ -52,37 +52,36 @@ methods: (self)
 		self.w2vvocab = {}
 		self.v2wvocab = []
 		
-		# load pretrained embedings
-		if(pre_train_infile is not None):				#if(os.path.isfile(pre_train_infile)):
-			log.info('reading pre-trained embeddings from ' + pre_train_infile + '...')
-			with io.open(Path(pre_train_infile), 'r', encoding='utf-8') as infile:
+		self.pt_v2wvocab = []
+		self.pt_w2vvocab = {}
+		self.cnt = 0
 
-				first_line = infile.readline().split()
-				assert len(first_line) == 2
-				n_vecs, emb_dim = map(int, first_line)	# first line has total number of vectors and embedding dimensions
-				#assert emb_dim == self.emb_size
-				self.emb_size = emb_dim
-				if vecs is not None and vecs > 0: n_vecs = min(n_vecs, vecs)
-				# add an UNK token
-				self.pretrained = np.empty((n_vecs, emb_dim), dtype=np.float)
-				self.pt_v2wvocab = []
-				self.pt_w2vvocab = {}
-				cnt = 0
-				for _ in trange(n_vecs):
-					line = infile.readline()
-					if not line: break
-					parts = line.rstrip().split(' ')
-					word = parts[0]
-					#if word in self.pt_v2wvocab: continue		# no need to check if assumed no repetition mistake
-					# add to vocabs
-					self.pt_v2wvocab.append(word)
-					self.pt_w2vvocab[word] = cnt
-					vector = [float(x) for x in parts[1:]]
-					self.pretrained[cnt] = vector
-					cnt += 1
-			log.info("vectors imported...")
-		else:
-			log.info("pre_train_file ", Path(pre_train_infile), " does not exist.\nSkipping...")
+		## load pretrained embedings
+		#if(pre_train_infile is not None):				#if(os.path.isfile(pre_train_infile)):
+		#	log.info('reading pre-trained embeddings from ' + pre_train_infile + '...')
+		#	with io.open(Path(pre_train_infile), 'r', encoding='utf-8') as infile:
+
+		#		first_line = infile.readline().split()
+		#		assert len(first_line) == 2
+		#		n_vecs, emb_dim = map(int, first_line)	# first line has total number of vectors and embedding dimensions
+		#		assert emb_dim == self.emb_size
+		#		self.emb_size = emb_dim
+		#		if vecs is not None and vecs > 0: n_vecs = min(n_vecs, vecs)
+		#		for _ in trange(n_vecs):
+		#			line = infile.readline()
+		#			if not line: break
+		#			parts = line.rstrip().split(' ')
+		#			word = parts[0]
+		#			#if word in self.pt_v2wvocab: continue		# no need to check if assumed no repetition mistake
+		#			# add to vocabs
+		#			self.pt_v2wvocab.append(word)
+		#			self.pt_w2vvocab[word] = cnt
+		#			vector = [float(x) for x in parts[1:]]
+		#			self.pretrained[cnt] = vector
+		#			cnt += 1
+		#	log.info("vectors imported...")
+		#else:
+		#	log.info("pre_train_file ", Path(pre_train_infile), " does not exist.\nSkipping...")
 		
 		# add <unk>
 		self.unk_tok = opt.unk_tok
@@ -100,7 +99,38 @@ methods: (self)
 		opt.eos_idx = self.eos_idx = self.w2vvocab[self.eos_tok]
 		self.embeddings[self.eos_idx][:] = 1	# 0
 		log.info("vocab initializing...done.")
+		# add pre trained embeddings
+		self.add_pre_trained_emb(pre_train_infile, vecs)
 
+	def add_pre_trained_emb(self, pre_train_infile = None, vecs = opt.n_vecs):
+		# load pretrained embedings
+		if(pre_train_infile is None): raise Exception('file not specified...')
+		if(os.path.isfile(pre_train_infile)):
+			log.info('reading pre-trained embeddings from ' + pre_train_infile + '...')
+			with io.open(Path(pre_train_infile), 'r', encoding='utf-8') as infile:
+				first_line = infile.readline().split()
+				assert len(first_line) == 2
+				n_vecs, emb_dim = map(int, first_line)	# first line has total number of vectors and embedding dimensions
+				assert emb_dim == self.emb_size
+				self.emb_size = emb_dim
+				if vecs is not None and vecs > 0: n_vecs = min(n_vecs, vecs)
+				if not hasattr(self, 'pretrained'):	self.pretrained = np.empty(shape=(n_vecs, emb_dim), dtype=np.float)
+				else: self.pretrained = np.append(self.pretrained, np.empty(shape=(n_vecs, emb_dim), dtype=np.float), axis=0)
+				for _ in trange(n_vecs):
+					line = infile.readline()
+					if not line: break
+					parts = line.rstrip().split(' ')
+					word = parts[0]
+					#if word in self.pt_v2wvocab: continue		# no need to check if assumed no repetition mistake
+					# add to vocabs
+					self.pt_v2wvocab.append(word)
+					self.pt_w2vvocab[word] = self.cnt
+					vector = [float(x) for x in parts[1:]]
+					self.pretrained[self.cnt] = vector
+					self.cnt += 1
+			log.info("embedding vectors imported...")
+		else:
+			raise FileNotFoundError(log.info("pre_train_file ", Path(pre_train_infile), " does not exist..."))
 
 	def base_form(self, word):
 		"""
@@ -245,10 +275,11 @@ if __name__ == "__main__":
 	"""
 	print(opt.pre_trained_src_emb_file)
 	vocab = Vocab(opt.pre_trained_src_emb_file)
+	vocab.add_pre_trained_emb(opt.pre_trained_tgt_emb_file)
 	vocab.add_word('the')
 	vocab.add_word('of')
 	vocab.add_word('this')
-	emb_layer = vocab.init_embed_layer(False)
+	emb_layer = vocab.init_embed_layer(clear_pt=False)
 	print(emb_layer.variables)
 
 # imp link https://www.tensorflow.org/tfx/tutorials/transform/census , https://www.tensorflow.org/api_docs/python/tf/numpy_function , https://www.tensorflow.org/api_docs/python/tf/py_function

@@ -6,11 +6,12 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "code", "code", "{6563498D-2822-4E96-9FEE-82891A36F9F5}"
 	ProjectSection(SolutionItems) = preProject
 		data.py = data.py
+		evaluate.py = evaluate.py
 		layers.py = layers.py
 		models.py = models.py
 		options.py = options.py
-		train_data.py = train_data.py
 		train.py = train.py
+		train_data.py = train_data.py
 		utils.py = utils.py
 		vocab.py = vocab.py
 	EndProjectSection

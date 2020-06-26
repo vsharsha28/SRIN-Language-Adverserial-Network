@@ -47,8 +47,8 @@ def get_train_data(opt):
 
 	# vocab
 	log.info(f'Loading Embeddings...')
-	vocab = Vocab(opt.pre_trained_src_emb_file)
-	vocab = Vocab(opt.pre_trained_tgt_emb_file)
+	vocab = Vocab(opt.pre_trained_src_emb_file, opt.n_vecs)
+	vocab.add_pre_trained_emb(opt.pre_trained_tgt_emb_file, opt.n_vecs)
 	log.info(f'Done.')
 
 	# datasets
@@ -57,22 +57,21 @@ def get_train_data(opt):
 	# src_lang datasets
 	log.info(f'Loading src datasets...')
 	reviews_src_obj = AmazonReviews(path=opt.data_path, max_seq_len=opt.max_seq_len)
-	train_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='train', lines=opt.train_size_src)
-	dev_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='dev', lines=1000)
-	test_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='test', lines=1000)
-	length['train_src'], length['dev_src'], length['test_src'] = len(train_src), len(dev_src), len(test_src)
+	train_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='train', lines=opt.train_size_src); length['train_src'] = len(train_src)
+	dev_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='dev', lines=10); length['dev_src'] = len(dev_src)
+	test_src = reviews_src_obj.load_data(lang=opt.src_lang, dat='test', lines=10); length['test_src'] = len(test_src)
 	log.info('Done loading src datasets.')
  
 	# tgt_lang datasets
 	log.info(f'Loading tgt datasets...')
 	reviews_tgt_obj = AmazonReviews(path=opt.data_path, max_seq_len=opt.max_seq_len)
-	train_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='train', lines=opt.train_size_tgt)
-	dev_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='dev', lines=1000)
-	test_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='test', lines=1000)
-	length['train_tgt'], length['dev_tgt'], length['test_tgt'] = len(train_tgt), len(dev_tgt), len(test_tgt)
+	train_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='train', lines=opt.train_size_tgt); length['train_tgt'] = len(train_tgt)
+	dev_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='dev', lines=10); length['dev_tgt'] = len(dev_tgt)
+	test_tgt = reviews_tgt_obj.load_data(lang=opt.tgt_lang, dat='test', lines=10); length['test_tgt'] = len(test_tgt)
+	
 	log.info('Done loading tgt datasets.')
 
-	opt.num_labels = max(reviews_src_obj.star_rating, reviews_tgt_obj.star_rating)
+	#opt.num_labels = max(reviews_src_obj.star_rating, reviews_tgt_obj.star_rating)
 	if opt.max_seq_len < 0 or not opt.max_seq_len:
 		maxlen_src, maxlen_tgt = max(list(len(x) for x in train_src)), max(list(len(x) for x in train_tgt))
 		opt.max_seq_len = max(maxlen_src, maxlen_tgt)

@@ -12,6 +12,7 @@ os.chdir(os.path.dirname(__file__))
 from options import opt
 from vocab import *
 
+label_dtype = opt.label_dtype
 
 def decode_json(infile, lines=None, reviews_data=None, max_seq_len=None):
 	assert os.path.isfile(Path(infile)), str(os.getcwd() / infile) + " doesn't exist, extract_data first"
@@ -23,7 +24,7 @@ def decode_json(infile, lines=None, reviews_data=None, max_seq_len=None):
 			stars = 0
 			for _, line in z:
 				dic = json.loads(line)
-				ret += [[str(dic["review_title"] + dic["review_body"]).strip().split()[:max_seq_len], int(dic['stars'])]]
+				ret += [[str(dic["review_title"] + dic["review_body"]).strip().split()[:max_seq_len], tf.cast(int(dic['stars']), dtype=opt.label_dtype)]]
 				stars = max(stars, int(dic['stars']))
 			return ret, stars
 		return [json.loads(line) for line in tqdm(infile.read().strip().split('\n')[:lines])]
@@ -40,7 +41,7 @@ def decode_json_iterate(infile, lines=None, reviews_data=None, max_seq_len=None)
 				dic = json.loads(line)
 				pbar.update(len(line) if not lines else 1)
 				yield dic if reviews_data != 'Amazon reviews' \
-					else [str(dic["review_title"] + dic["review_body"]).strip().split()[:max_seq_len], int(dic["stars"])]
+					else [str(dic["review_title"] + dic["review_body"]).strip().split()[:max_seq_len], tf.cast(int(dic["stars"]), dtype=opt.label_dtype)]
 
 
 class AmazonReviews:

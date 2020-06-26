@@ -4,7 +4,7 @@
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers, models, optimizers, preprocessing
+from tensorflow.keras import layers, models, optimizers, preprocessing, losses
 
 import numpy as np
 import os, io
@@ -15,9 +15,91 @@ from options import opt
 from layers import *
 
 
+class Optimizer_FP(optimizers.Adam, optimizers.Optimizer):
+	def __init__(self, models:list, optimizer_fn=None, clip_lim=None, **kwargs):
+		"""Special optimizer for F and P simultaneously
+parameters:
+		models : list = [F, P, Q]
+		"""
+		super(Optimizer_FP, self).__init__(**kwargs)
+		#self._set_hyper('clipvalue', kwargs.get('clipvalue', clipvalue))
+		#clipvalue_t = array_ops.identity(self._get_hyper('clipvalue', var_dtype))
+		self.optim = optimizers.Adam(learning_rate=opt.learning_rate) if not optimizer_fn else optimizer_fn
+		self.F, self.P, self.Q = models
+		self.training = True
+		self.clip_lim = clip_lim
+		self.metrices = {'loss' : None, 'src_acc' : None, 'tgt_acc' : None, 'avg_loss' : None}
+
+	def call(self, inputs_src, inputs_tgt, labels_src, labels_tgt=None, _lambda=opt._lambda, supervised=False):
+		#self._set_hyper('_lambda', _lambda)
+		self._lambda = _lambda
+		self.supervised = supervised
+		self.train_step(inputs_src, inputs_tgt, labels_src, labels_tgt=None, compute_metrices=True)
+		return self.metrices
+		
+	def compute_metrices(self, inputs_src, inputs_tgt, labels_src, labels_tgt=None):
+		features_src = self.F(inputs_src)
+		features_tgt = self.F(inputs_tgt)
+
+		o_src_sent, l_src_sent = self.P(features_src, labels_src, compute_metrices=True)
+		o_tgt_sent, l_tgt_sent = self.P(features_tgt, labels_tgt, compute_metrices=True) if self.supervised else (None, 0)
+
+		_, l_src_ad = self.Q(features_src, compute_metrices=True)
+		_, l_tgt_ad = self.Q(features_tgt, compute_metrices=True)
+
+		self.metrices['loss'] = l_src_sent + l_tgt_sent + self._lambda * (l_src_ad - l_tgt_ad)
+
+		predictions = argmax32(o_src_sent)
+		self.total = len(labels_src)
+		self.correct = np.sum(predictions == labels_src)
+		self.metrices['src_acc'] = self.correct / self.total
+
+		if self.supervised:
+			predictions = argmax32(o_tgt_sent)
+			self.total += len(labels_tgt)
+			self.correct += np.sum(predictions == labels_tgt, output_type=tf.int8)
+			self.metrices['tgt_acc'] = self.correct / self.total
+
+		self.metrices['avg_loss'] = tf.nn.compute_average_loss(self.metrices['loss'], global_batch_size=len(labels_src) + (len(labels_tgt) if labels_tgt else 0))
+		return self.metrices
+	
+	
+	def train_step(self, inputs_src, inputs_tgt, labels_src, labels_tgt=None, compute_metrices=False):
+		with tf.GradientTape() as tape:
+			loss = self.compute_metrices(inputs_src, inputs_tgt, labels_src, labels_tgt)['loss']
+		gradients = tape.gradient(loss, list(self.P.net.trainable_variables) + list(self.F.fcnet.trainable_variables))
+		if opt.clip_lim_FP: gradients = [(tf.clip_by_value(grad, self.clip_lim_FP[0], self.clip_lim_FP[1])) for grad in gradients]
+		if self.training: self.apply_gradients(zip(gradients, list(self.P.net.trainable_variables) + list(self.F.fcnet.trainable_variables)))	# experimental_aggregate_gradients
+		if compute_metrices: self.compute_metrices(inputs_src, inputs_tgt, labels_src, labels_tgt)
+		return self.metrices
+	
+	def get_config(self):
+		config = super(Optimizer_FP, self).get_config()
+		#config.update({
+		#		'_lambda': self._serialize_hyperparameter('_lambda'),
+		#		'clipvalue': self._serialize_hyperparameter('clipvalue'),
+		#	})
+		return config
+		#config = {"name": self._name}
+		if self.clipnorm is not None: config["clipnorm"] = self.clipnorm
+		if self.clipvalue is not None: config["clipvalue"] = self.clipvalue
+		return config
+
+	def freeze(self):
+		self.training = False
+
+	def unfreeze(self):
+		self.training = True
+
+	@tf.function
+	def distributed_train_step(dist_inputs):
+		per_replica_losses = mirrored_strategy.run(train_step, args=(dist_inputs,))
+		return mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
+
+
 class DAN_Feature_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, pooling='avg', dropout=0, batch_norm=False, activation='selu', **kwargs):
-		super(DAN_Feature_Extractor, self).__init__(**kwargs)
+	def __init__(self, vocab, num_layers, hidden_size, pooling='avg', dropout=0, batch_norm=False, activation=opt.linear_activation):
+		super(DAN_Feature_Extractor, self).__init__()
 		assert num_layers >= 0, 'Invalid layer numbers'
 		self.trainable=True
 
@@ -49,10 +131,16 @@ class DAN_Feature_Extractor(keras.Model):
 		self.trainable = True
 		self.fcnet.trainable = True
 
+	def freeze_emb_layer(self):
+		self.emb_layer.trainable = False
+
+	def unfreeze_emb_layer(self):
+		self.emb_layer.trainable = True
+
 
 class LSTM_Feature_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, dropout=0, bidir_rnn=True, attn_type='dot', **kwargs):
-		super(LSTM_Feature_Extractor, self).__init__(**kwargs)
+	def __init__(self, vocab, num_layers, hidden_size, dropout=0, bidir_rnn=True, attn_type='dot'):
+		super(LSTM_Feature_Extractor, self).__init__()
 
 		self.num_layers = num_layers
 		self.bidir_rnn = bidir_rnn
@@ -100,8 +188,8 @@ class LSTM_Feature_Extractor(keras.Model):
 
 
 class CNN_Feature_Extractor(keras.Model):
-	def __init__(self, vocab, num_layers, hidden_size, kernel_num, kernel_sizes, dropout=0, **kwargs):
-		super(CNN_Feature_Extractor, self).__init__(**kwargs)
+	def __init__(self, vocab, num_layers, hidden_size, kernel_num, kernel_sizes, dropout=0):
+		super(CNN_Feature_Extractor, self).__init__()
 		self.emb_layer = vocab.init_embed_layer()
 		self.kernel_num = kernel_num
 		self.kernel_sizes = kernel_sizes
@@ -142,21 +230,27 @@ class CNN_Feature_Extractor(keras.Model):
 
 
 class Sentiment_Classifier(keras.Model):
-	def __init__(self, num_layers, hidden_size, output_size, dropout=0, batch_norm=False, **kwargs):
+	def __init__(self, num_layers, hidden_size, output_size, dropout=0, batch_norm=False, loss_fn=None, **kwargs):
 		super(Sentiment_Classifier, self).__init__(**kwargs)
 		assert num_layers >= 0, 'Invalid layer numbers'
 		self.trainable=True
 		self.net = models.Sequential()
 		for _ in range(num_layers):
 			if dropout > 0: self.net.add(layers.Dropout(rate=dropout))
-			self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation='selu'))
+			self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation=opt.linear_activation))
 			if batch_norm: self.net.add(layers.BatchNormalization())
 			self.net.add(layers.ReLU())
-		self.net.add(layers.Dense(units=output_size, input_shape=(hidden_size,), activation='selu'))
-		self.net.add(LogSoftmax(axis=-1))
-
-	def call(self, input):
-		return self.net(input)
+		self.net.add(layers.Dense(units=output_size, input_shape=(hidden_size,), activation=opt.linear_activation))
+		self.net.add(layers.Softmax(axis=-1))
+		#self.net.add(LogSoftmax(axis=-1))
+		self.loss_fn = losses.SparseCategoricalCrossentropy(from_logits=False, reduction=tf.keras.losses.Reduction.NONE) if not loss_fn else loss_fn
+		self.metrices = {'loss' : None, 'src_acc' : None, 'tgt_acc' : None, 'avg_loss' : None}
+	
+	def call(self, input, labels, compute_metrices=True):
+		if not compute_metrices: return self.net(input)
+		outputs_sent = self.net(input)
+		loss_sent = self.loss_fn(labels, outputs_sent)
+		return outputs_sent, loss_sent
 
 	def freeze(self):
 		self.trainable = False
@@ -169,7 +263,7 @@ class Sentiment_Classifier(keras.Model):
 
 
 class Language_Detector(keras.Model):
-	def __init__(self, num_layers, hidden_size, dropout=0, batch_norm=False, activation='selu', **kwargs):
+	def __init__(self, num_layers, hidden_size, dropout=0, batch_norm=False, activation=opt.linear_activation, **kwargs):
 		super(Language_Detector, self).__init__(**kwargs)
 		assert num_layers >= 0, 'Invalid layer numbers'
 		self.trainable = True
@@ -181,29 +275,32 @@ class Language_Detector(keras.Model):
 			if batch_norm: self.net.add(layers.BatchNormalization(input_shape=(hidden_size,)))
 		self.net.add(layers.Dense(units=hidden_size, input_shape=(hidden_size,), activation=activation))
 		self.net.add(layers.Dense(units=1, input_shape=(hidden_size,), activation=activation))
+		self.metrices = {'loss' : None}
 
-	def call(self, input, compute_loss=False):
-		if not compute_loss: return self.net(input)
+	def call(self, input, compute_metrices=False):
+		if not compute_metrices: return self.net(input)
 		output_ad = self.net(input)
-		loss_ad = self.loss_fn(o_ad)
+		loss_ad = self.loss_fn(output_ad)
+		self.metrices['loss'] = loss_ad
 		return output_ad, loss_ad
 
-	def compile(self, optimizer=optimizers.Adam(learning_rate=opt.Q_learning_rate), loss_fn=tf.reduce_mean):
+	def compile(self, optimizer=None, loss_fn=tf.reduce_mean):
 		super(Language_Detector, self).compile()
-		self.optimizer = optimizer
+		self.optimizer = optimizers.Adam(learning_rate=opt.Q_learning_rate) if not optimizer else optimizer
 		self.loss_fn = loss_fn
 		#self.net.compile(optimizer=self.optimizer, loss=loss_fn)
 
 	def train_step(self, features, name='src', _lambda=1.0):
 		sgn = -1 if name == 'src' else 1
 		with tf.GradientTape() as tape:
-			output_ad = sgn * _lambda * self(features)
-			loss_ad = self.loss_fn(output_ad, axis=-1, name='loss_ad')
+			output_ad = _lambda * self(features, training=True)
+			loss_ad = sgn * self.loss_fn(output_ad, axis=-1, name='loss_ad')
 		#log.info(loss_ad)
 		trainable_variables = self.net.trainable_variables
 		grads = tape.gradient(loss_ad, trainable_variables)
 		if self.trainable: self.optimizer.apply_gradients(zip(grads, self.net.trainable_weights))
-		return {"loss_ad" : loss_ad}
+		self.metrices['loss'] = loss_ad
+		return self.metrices
 
 	def clip_weights(self):
 		pass

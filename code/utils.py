@@ -9,13 +9,16 @@ from tensorflow.keras import layers, models, preprocessing
 import pdb
 import numpy as np
 
-from options import opt
+from options import *
 
 def freeze(net):
 	net.trainable = False
 
 def unfreeze(net):
 	net.trainable = True
+
+def argmax32(arr, axis=-1, dtype=opt.label_dtype):
+	return tf.cast(np.argmax(arr, axis=-1), dtype=dtype)
 
 def pad(x : list, y : list, eos_idx : int, sort:bool=False):
 	#inputs, lengths = zip(*x)
