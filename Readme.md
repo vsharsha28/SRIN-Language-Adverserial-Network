@@ -19,7 +19,7 @@ LAN has two branches. There are three main components in the network:
 - Sentiment classifier __P__ that predicts the label for x given the feature representation F (x).
 - Language discriminator __Q__ that also takes F (x) but predicts a scalar score indicating whether x is from SOURCE or TARGET.
 
-We adopt the Deep Averaging Network (DAN) for the Feature extractor F. DAN takes the arithmetic mean of the word vectors as input, and passes it through several fully-connected layers until a softmax for classification.
+We adopt the __Deep Averaging Network (DAN)__ for the Feature extractor F. DAN takes the arithmetic mean of the word vectors as input, and passes it through several fully-connected layers until a softmax for classification.
 
 DAN takes the _arithmetic mean_ of the word vectors as input, and passes it through several fully-connected layers until a _softmax_ for classification. In LAN, F first calculates the average of the word vectors in the input sequence, then passes the average through a feed-forward network with ReLU nonlinearities. The activations of the last layer in F are considered the extracted features for the input and are then passed on to P and Q. The sentiment classifier P and the language discriminator Q are standard feed-forward networks. P has a _softmax_ layer on top for text classification and Q ends with a _linear_ layer of output width 1 to assign a language identification score.
 
